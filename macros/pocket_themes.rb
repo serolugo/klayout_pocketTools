@@ -31,11 +31,153 @@ module PocketThemes
     }
   }.freeze
 
+  # KLayout's built-in ColorPalette (layColorPalette.cc). The config entry is
+  # empty for this default palette; the toolbox stores it internally in C++.
+  DEFAULT_LAYER_COLORS = %w[
+    255,157,157 255,128,168 192,128,255 149,128,255 128,134,255 128,168,255
+    255,0,0 255,0,128 255,0,255 128,0,255 0,0,255 0,128,255
+    128,0,0 128,0,87 128,0,128 80,0,128 0,0,128 0,64,128
+    128,255,251 128,255,141 175,255,128 243,255,128 255,194,128 255,160,128
+    0,255,255 1,255,107 145,255,0 221,255,0 255,174,0 255,128,0
+    0,128,128 0,128,80 0,128,0 80,128,0 128,128,0 128,80,0
+    255,255,255 192,192,192 128,128,128 96,96,96 64,64,64 0,0,0
+  ].freeze
+
+  def self.layer_colors
+    configured = RBA::Application.instance.get_config("color-palette").to_s
+    entries = configured.empty? ? DEFAULT_LAYER_COLORS : configured.split
+    entries.map do |entry|
+      match = /\A(\d+),(\d+),(\d+)(?:\[\d+\])?\z/.match(entry)
+      next unless match
+      RBA::QColor.new(*match.captures.first(3).map(&:to_i))
+    end
+  end
+
+  class ToolboxSwatchHover < RBA::QObject
+    def eventFilter(widget, event)
+      if event.type == RBA::QEvent::Enter
+        widget.setProperty("pocket_hovered", true)
+        widget.setLineWidth(2)
+      elsif event.type == RBA::QEvent::Leave
+        widget.setProperty("pocket_hovered", false)
+        widget.setLineWidth(widget.property("pocket_selected") ? 2 : 1)
+      end
+      false
+    end
+  end
+
+  # KLayout paints color samples with each label's own Window palette role.
+  # Restore that role after theme changes; style the remaining chrome roles.
+  def self.style_layer_toolbox(dock, name)
+    colors = THEMES.fetch(name)
+    widgets = [dock]
+    headers = []
+    walk = lambda do |parent|
+      parent.children.each do |child|
+        widgets << child if child.respond_to?(:palette) && child.respond_to?(:setPalette)
+        headers << child if parent.objectName == "lt" && child.objectName == "panel"
+        walk.call(child)
+      end
+    end
+    walk.call(dock)
+    sample = widgets.find do |widget|
+      widget.objectName == "button" && widget.respond_to?(:text) && widget.text.to_s.empty? &&
+        widget.parent && widget.parent.objectName == "color_f" &&
+        widget.parent.parent && %w[colors colors_frame].include?(widget.parent.parent.objectName)
+    end
+    if dock.property("pocket_tools_theme").to_s == name && sample &&
+       sample.palette.color(RBA::QPalette::Light).name == colors[:alternate] &&
+       sample.palette.color(RBA::QPalette::Window).name == layer_colors.first.name
+      return
+    end
+
+    roles = {
+      WindowText: :text, Text: :text, ButtonText: :text,
+      Highlight: :button, HighlightedText: :text,
+      Light: :alternate, Midlight: :alternate,
+      Mid: :window, Dark: :base, Shadow: :base
+    }
+    swatches = layer_colors
+    swatch_positions = Hash.new(0)
+    widgets.each do |widget|
+      palette = RBA::QPalette.new(widget.palette)
+      roles.each do |role, key|
+        palette.setColor(RBA::QPalette.const_get(role), RBA::QColor.new(colors.fetch(key)))
+      end
+      if widget.objectName == "button" && widget.parent && widget.parent.objectName == "color_f"
+        section = widget.parent.parent
+        if section && %w[colors colors_frame].include?(section.objectName)
+          row = widget.parent.parent.children.select { |child| child.objectName == "color_f" }.index(widget.parent)
+          column = swatch_positions[widget.parent.object_id]
+          swatch_positions[widget.parent.object_id] += 1
+          color = swatches[column * 6 + row] if row
+          palette.setColor(RBA::QPalette::Window, color) if color
+        end
+      end
+      widget.setPalette(palette)
+    end
+    unless dock.property("pocket_hover_ready")
+      hover_filter = ToolboxSwatchHover.new(dock)
+      @toolbox_hover_filters ||= {}
+      key = dock.object_id
+      @toolbox_hover_filters[key] = hover_filter
+      dock.destroyed { @toolbox_hover_filters.delete(key) }
+      widgets.each do |widget|
+        next unless widget.objectName == "button" && widget.respond_to?(:text) && widget.text.to_s.empty?
+        next unless widget.parent && widget.parent.objectName == "color_f"
+        widget.installEventFilter(hover_filter)
+      end
+      dock.setProperty("pocket_hover_ready", true)
+    end
+    headers.each do |header|
+      header.setBackgroundRole(RBA::QPalette::Button)
+      header.setForegroundRole(RBA::QPalette::ButtonText)
+    end
+    dock.setProperty("pocket_tools_theme", name)
+  end
+
+  def self.refresh_layer_toolbox_selection(dock)
+    view = RBA::MainWindow.instance.current_view
+    selected = view && view.selected_layers.to_a
+    layer = view && (selected.first || view.current_layer).current
+    # KLayout names the frame palette "colors" and the fill palette "colors_frame".
+    colors = layer ? { "colors" => layer.frame_color, "colors_frame" => layer.fill_color } : {}
+    walk = lambda do |parent|
+      parent.children.each do |child|
+        if child.objectName == "button" && child.respond_to?(:text) && child.text.to_s.empty? &&
+           child.parent && child.parent.objectName == "color_f"
+          section = child.parent.parent
+          target = section && colors[section.objectName]
+          is_selected = target && (child.palette.color(RBA::QPalette::Window).rgb.to_i & 0xffffff) == (target.to_i & 0xffffff)
+          is_selected = !!is_selected
+          if child.property("pocket_selected") != is_selected
+            child.setProperty("pocket_selected", is_selected)
+            child.setLineWidth(is_selected || child.property("pocket_hovered") ? 2 : 1)
+          end
+        end
+        walk.call(child)
+      end
+    end
+    walk.call(dock)
+  rescue StandardError => e
+    # A closed view can invalidate its Qt wrappers while the toolbox remains.
+    message = "#{e.class}: #{e.message}"
+    if @toolbox_selection_error != message
+      @toolbox_selection_error = message
+      warn "Pocket Themes Layer Toolbox selection: #{message}"
+    end
+  end
+
   # The native DRC Info panel embeds blue in its rich text instead of using
   # the palette. Change only that foreground, preserving links, images and text.
   def self.refresh_drc_info
     @drc_panels ||= {}
     RBA::QApplication.allWidgets.each do |widget|
+      if widget.objectName == "lt_dock_widget"
+        style_layer_toolbox(widget, @applied_theme || saved_theme)
+        refresh_layer_toolbox_selection(widget)
+        next
+      end
       next unless widget.objectName == "info_text"
       parent = widget.parent
       parent = parent.parent while parent && !%w[MarkerBrowserPage MarkerBrowserDialog].include?(parent.objectName)
