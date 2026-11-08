@@ -1,9 +1,12 @@
 """Native Windows/GUI API checks; launched in a separate, isolated KLayout."""
 import io
+from collections import Counter
 import json
+import os
 from pathlib import Path
 import runpy
 import sys
+import time
 import traceback
 import unittest
 import xml.etree.ElementTree as ET
@@ -19,6 +22,171 @@ mw = app.main_window()
 
 
 class ReleaseChecks(unittest.TestCase):
+    def test_drc_status_colors_are_rendered(self):
+        # Windows Qt's offscreen platform does not discover system fonts.
+        # Load one explicitly so pixel assertions include real text glyphs.
+        font = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts/segoeui.ttf"
+        if font.is_file():
+            self.assertGreaterEqual(pya.QFontDatabase.addApplicationFont(str(font)), 0)
+            pya.QApplication.setFont(pya.QFont("Segoe UI", 10))
+        ruby = pya.Interpreter.ruby_interpreter()
+        if ruby is None:
+            self.skipTest("Ruby unavailable")
+        ruby.eval_string((ROOT / "macros/pocket_themes.rb").read_text(encoding="utf-8"))
+        rdb_index = self.view.create_rdb("DRC states")
+        database = self.view.rdb(rdb_index)
+        cell = database.create_cell("TOP")
+        clean = database.create_category("clean_rule")
+        failing = database.create_category("failing_rule")
+        waived = database.create_category("waived_rule")
+        database.create_item(cell, failing).add_value(pya.DBox(0, 0, 1, 1))
+        item = database.create_item(cell, waived)
+        item.add_value(pya.DBox(2, 0, 3, 1))
+        item.add_tag(database.tag_id("waived"))
+        self.view.show_rdb(rdb_index, self.cv.index())
+        deadline = time.monotonic() + 0.2
+        while time.monotonic() < deadline:
+            app.process_events()
+            time.sleep(0.01)
+        tree = next(w for w in pya.QApplication.allWidgets()
+                    if edit.value(w, "objectName") == "directory_tree")
+        tree.expandAll()
+        model = edit.value(tree, "model")
+        def find(label, parent=pya.QModelIndex()):
+            for row in range(model.rowCount(parent)):
+                index = model.index(row, 0, parent)
+                if str(model.data(index, int(pya.Qt.DisplayRole))) == label:
+                    return index
+                result = find(label, index)
+                if result is not None:
+                    return result
+        indices = {label: find(label) for label in ("clean_rule", "failing_rule", "waived_rule")}
+        self.assertTrue(all(index is not None for index in indices.values()), repr(indices))
+        # "Show All" may be off by default; make empty categories visible.
+        for index in indices.values():
+            tree.setRowHidden(edit.value(index, "row"), edit.value(index, "parent"), False)
+        tree.setColumnWidth(0, 300)
+        tree.expandAll()
+        edit.value(tree, "window").show()
+        def rendered_color(index, color=0x00c000):
+            tree.doItemsLayout()
+            tree.scrollTo(index)
+            rect = tree.visualRect(index)
+            self.assertTrue(rect.isValid(), repr((model.data(index, 0), edit.value(index, "row"),
+                tree.isRowHidden(edit.value(index, "row"), edit.value(index, "parent")),
+                model.data(edit.value(index, "parent"), 0))))
+            viewport = edit.value(tree, "viewport")
+            offset = edit.value(viewport, "pos")
+            rect = rect.translated(offset)
+            image = edit.value(tree.grab(), "toImage")
+            width, height = edit.value(image, "width"), edit.value(image, "height")
+            scale = edit.value(image, "devicePixelRatio")
+            pixels = Counter(image.pixel(x, y) & 0xffffff
+                             for y in range(max(0, int(rect.top * scale)), min(height, int((rect.bottom + 1) * scale)))
+                             for x in range(max(0, int(rect.left * scale)), min(width, int((rect.right + 1) * scale))))
+            return pixels[color]
+        for theme in ("dark", "graphite", "solarized_dark", "light", "solarized_light"):
+            ruby.eval_string("PocketThemes.apply('" + theme + "')")
+            tree.clearSelection()
+            for label in ("clean_rule", "waived_rule"):
+                index = indices[label]
+                self.assertGreater(rendered_color(index), 0, (theme, label))
+                tree.setCurrentIndex(index)
+                # Selection must remain readable, and deselecting restores green.
+                self.assertTrue(edit.value(tree, "selectionModel").isSelected(index))
+                self.assertGreater(rendered_color(index, 0xffffff), 0, (theme, label, "selected"))
+                tree.clearSelection()
+                self.assertGreater(rendered_color(index), 0, (theme, label, "deselected"))
+            self.assertEqual(rendered_color(indices["failing_rule"]), 0, theme)
+
+        # Exercise the native Qt hierarchy used by Salt without making network
+        # requests or touching installed packages. A black model foreground
+        # must be corrected here, while DRC foregrounds above remain native.
+        salt = pya.QDialog(mw)
+        salt.setObjectName("SaltManagerDialog")
+        layout = pya.QVBoxLayout(salt)
+        listing = pya.QTreeWidget(salt)
+        listing.setHeaderHidden(True)
+        layout.addWidget(listing)
+        item = pya.QTreeWidgetItem(["Pocket Tools package"])
+        item.setForeground(0, pya.QBrush(pya.QColor("#000000")))
+        listing.addTopLevelItem(item)
+        salt.resize(420, 140)
+        salt.show()
+        try:
+            for theme, color in (("dark", 0xeeeeee), ("graphite", 0xf1f2f3),
+                                 ("solarized_dark", 0xd2dddd), ("light", 0x20242a),
+                                 ("solarized_light", 0x344c56)):
+                ruby.eval_string("PocketThemes.apply('" + theme + "')")
+                listing.clearSelection()
+                image = edit.value(listing.grab(), "toImage")
+                count = sum((image.pixel(x, y) & 0xffffff) == color
+                            for y in range(edit.value(image, "height"))
+                            for x in range(edit.value(image, "width")))
+                self.assertGreater(count, 0, (theme, "Salt foreground"))
+                listing.setCurrentItem(item)
+                selected = edit.value(listing.grab(), "toImage")
+                count = sum((selected.pixel(x, y) & 0xffffff) == 0xffffff
+                            for y in range(edit.value(selected, "height"))
+                            for x in range(edit.value(selected, "width")))
+                self.assertGreater(count, 0, (theme, "Salt selected foreground"))
+        finally:
+            salt.hide()
+            salt.deleteLater()
+
+    def test_drc_description_contrast(self):
+        ruby = pya.Interpreter.ruby_interpreter()
+        if ruby is None:
+            self.skipTest("Ruby unavailable")
+        ruby.eval_string((ROOT / "macros/pocket_themes.rb").read_text(encoding="utf-8"))
+        rdb_index = self.view.create_rdb("Theme contrast test")
+        self.view.show_rdb(rdb_index, self.cv.index())
+        panels = []
+        for widget in pya.QApplication.allWidgets():
+            if edit.value(widget, "objectName") != "info_text":
+                continue
+            parent = edit.value(widget, "parent")
+            while parent is not None and edit.value(parent, "objectName") not in ("MarkerBrowserPage", "MarkerBrowserDialog"):
+                parent = edit.value(parent, "parent")
+            if parent is not None:
+                panels.append(widget)
+        self.assertTrue(panels, "Native DRC Info panel not found")
+        panel = panels[0]
+        original = edit.value(panel, "toHtml")
+        html = ('<p style="color:blue; font-weight:bold">Width violation</p>'
+                '<p style="color:red">Error</p><p style="color:gray">Comment</p>'
+                '<a href="show-snapshot">Snapshot</a>')
+        def color_at(text):
+            cursor = panel.document.find(text)
+            color = edit.value(edit.value(edit.value(cursor, "charFormat"), "foreground"), "color")
+            return edit.value(color, "name")
+        try:
+            for theme, target in (("dark", "#8dbdf5"), ("graphite", "#a6c8f2"),
+                                  ("solarized_dark", "#85c6ee"), ("light", "#0000ff"),
+                                  ("solarized_light", "#0000ff")):
+                panel.setHtml(html)
+                ruby.eval_string("PocketThemes.apply('" + theme + "')")
+                self.assertEqual(color_at("Width violation"), target)
+                self.assertEqual(color_at("Error"), "#ff0000")
+                self.assertEqual(color_at("Comment"), "#808080")
+                self.assertTrue(edit.value(edit.value(panel.document.find("Snapshot"), "charFormat"), "isAnchor"))
+            ruby.eval_string("PocketThemes.apply('dark')")
+            self.assertEqual(color_at("Width violation"), "#8dbdf5")
+            ruby.eval_string("PocketThemes.apply('light')")
+            self.assertEqual(color_at("Width violation"), "#0000ff")
+            ruby.eval_string("PocketThemes.apply('dark')")
+            panel.setHtml(html.replace("Width violation", "New violation"))
+            # No timer tick or event-loop iteration: the native text update
+            # must already have the readable foreground before its first paint.
+            ruby.eval_string("raise PocketThemes.instance_variable_get(:@drc_error) if PocketThemes.instance_variable_get(:@drc_error)")
+            self.assertEqual(color_at("New violation"), "#8dbdf5")
+            for i in range(5):
+                panel.setHtml(html.replace("Width violation", "Violation " + str(i)))
+                self.assertEqual(color_at("Violation " + str(i)), "#8dbdf5")
+            self.assertGreaterEqual(edit.value(edit.value(panel.document.find("Violation 4"), "charFormat"), "fontWeight"), pya.QFont.Bold)
+        finally:
+            panel.setHtml(original)
+
     def setUp(self):
         mw.close_all()
         self.cv = mw.create_layout(1)

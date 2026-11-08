@@ -33,6 +33,16 @@ temporal. No modifica la configuración de la instancia principal.
   cerrar con X y recuperar. Themes y Consoles coexisten en ambos órdenes de
   carga; recargar la consola conserva Themes.
 - Búsqueda de capas: suite existente de integración nativa.
+- Contraste DRC: panel Info nativo, descripción azul claro en Dark/Graphite/
+  Solarized Dark, restauración del azul original en Light/Solarized Light y
+  actualización automática al cambiar el contenido. Se conservan negritas,
+  rojo de errores, gris de comentarios y enlaces.
+  El color se aplica dentro de la actualización del documento, sin esperar
+  al temporizador; probado con cambios consecutivos sin procesar eventos Qt.
+  Árbol DRC real con reglas limpias, con errores y dispensadas: captura de
+  píxeles verdes en los cinco temas, selección legible y verde restaurado al
+  deseleccionar. Comprobación Qt de la corrección de texto limitada al diálogo
+  Salt, sin acceder a la red ni modificar paquetes instalados.
 - Versión de Pocket Console y `grain.xml` coinciden: 1.0.
 - Regresión del gestor: pruebas existentes; hashes SHA-256 de
   `pocket_pdk.py`, `pocket_sky130.py` y `pocket_pdk_remove.py` sin cambios.

@@ -112,6 +112,20 @@ class ConsoleClickFocus(pya.QObject):
         return False
 
 
+class ConsoleEventWake(pya.QObject):
+    """Process worker output on the GUI thread when it actually arrives."""
+
+    def __init__(self, console, parent):
+        super().__init__(parent)
+        self.console = console
+
+    def eventFilter(self, watched, event):
+        if qt_value(event, "type") == pya.QEvent.User:
+            self.console.poll()
+            return True
+        return False
+
+
 def shell_program(marker):
     """Crear una sesión persistente de PowerShell o Bash."""
     if os.name == "nt":
@@ -334,7 +348,8 @@ class PocketConsole:
 
         self.timer = pya.QTimer(self.dock)
         self.timer.timeout = self.poll
-        self.timer.start(60)
+        self.wake_filter = ConsoleEventWake(self, self.dock)
+        self.dock.installEventFilter(self.wake_filter)
 
         self.write(PYTHON, "Python listo. help | merge | boxify | stretch | run('archivo.py') | restart")
         self.write(SHELL, self.shell_name + " — " + self.cwd)
@@ -691,7 +706,7 @@ class PocketConsole:
             )
             if event["phase"] != last_progress[0] or now - last_progress[1] >= 0.25 or finished:
                 last_progress[:] = [event["phase"], now]
-                self.events.put(("pdk_progress", event))
+                self.enqueue_event("pdk_progress", event)
 
         def worker():
             success = True
@@ -707,15 +722,17 @@ class PocketConsole:
                 success = False
                 verb = "eliminar" if action == "remove" else "instalar"
                 message = f"No se pudo {verb} {name}: {exc}"
-            self.events.put(("pdk", dict(name=name, action=action, success=success, message=message,
-                                         restart=success and "Reinicia KLayout" in message)))
+            self.enqueue_event("pdk", dict(name=name, action=action, success=success, message=message,
+                                           restart=success and "Reinicia KLayout" in message))
 
         self.pdk_installing = True
         self.update_pdk_progress({"phase": "prepare"})
+        self.timer.start(60)
         try:
             threading.Thread(target=worker, daemon=True).start()
         except Exception:
             self.pdk_installing = False
+            self.timer.stop()
             self.pdk_progress.hide()
             raise
         print(f"[EN CURSO] {action} {name}\nEl progreso aparece abajo; puedes seguir usando la consola.")
@@ -1112,9 +1129,8 @@ end
 
         process = self.proc
         marker = self.marker
-        events = self.events
-
-        # Este hilo solo lee texto. No toca widgets de Qt.
+        # Este hilo lee texto y publica avisos en la cola de Qt; los widgets
+        # solo se actualizan cuando la interfaz recibe esos avisos.
         def reader():
             try:
                 for raw_line in process.stdout:
@@ -1126,13 +1142,13 @@ end
                                 line[len(marker):]
                             ).decode("utf-8")
 
-                            events.put(("ready", location))
+                            self.enqueue_event("ready", location)
 
                         except Exception:
-                            events.put(("text", line))
+                            self.enqueue_event("text", line)
 
                     else:
-                        events.put(("text", line))
+                        self.enqueue_event("text", line)
 
             finally:
                 process.stdout.close()
@@ -1142,7 +1158,7 @@ end
                 except OSError:
                     pass
 
-                events.put(("exit", process.wait()))
+                self.enqueue_event("exit", process.wait())
 
         threading.Thread(
             target=reader,
@@ -1313,6 +1329,10 @@ end
             self.completion_pending = None
             self.write(SHELL, traceback.format_exc())
 
+    def enqueue_event(self, kind, value):
+        self.events.put((kind, value))
+        pya.QCoreApplication.postEvent(self.dock, pya.QEvent(pya.QEvent.User))
+
     def poll(self):
         self.update_partial_notice()
         for _ in range(100):
@@ -1388,6 +1408,7 @@ end
 
             elif event == "pdk":
                 self.pdk_installing = False
+                self.timer.stop()
                 self.pdk_progress.hide()
                 if isinstance(value, dict):
                     self.write(PYTHON, pocket_pdk.ascii_table(("Campo", "Resultado"), [
@@ -1424,7 +1445,8 @@ end
                     "[Sesión terminada. El siguiente comando abrirá una nueva.]",
                 )
 
-        self.animate_pdk_progress()
+        if self.pdk_installing:
+            self.animate_pdk_progress()
 
     def stop_shell(self):
         process = self.proc

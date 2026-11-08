@@ -16,6 +16,9 @@ Themes, consoles, layer search, editing commands and bindkeys for KLayout 0.30.1
 
 - **View → Pocket Tools → Themes:** Dark, Light, Graphite, Solarized Dark and
   Solarized Light. The last theme is saved; layer colors are configured separately.
+  DRC descriptions use light blue in dark themes for readability; light themes
+  retain native blue. The DRC tree keeps native status colors, including green
+  for rules with no outstanding errors. Marker and layer colors are unchanged.
 - **View → Pocket Tools → Consoles:** show or hide Python, Ruby and
   PowerShell/Bash independently. Python opens first. If you hide every console,
   restore the dock by enabling any console from this menu. Hiding a tab preserves
