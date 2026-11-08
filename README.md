@@ -9,10 +9,9 @@ Themes, consoles, layer search, editing commands and bindkeys for KLayout 0.30.1
 ## Install and get started
 
 **Method 1.** Close KLayout and extract the package into its data directory:
-`%USERPROFILE%\KLayout\salt\` on Windows. The package folder must contain
-`grain.xml`. Open KLayout in editing mode.
+`%USERPROFILE%\KLayout\salt\` on Windows. Open KLayout in editing mode.
 
-**Method 2.** Open **Tools → Manage Packages**, find Pocket Tools and install it.
+**Method 2.** Open **Tools → Manage Packages**, find Pocket Tools and install it. (not available yet)
 
 - **View → Pocket Tools → Themes:** Dark, Light, Graphite, Solarized Dark and
   Solarized Light. The last theme is saved; layer colors are configured separately.
@@ -128,20 +127,6 @@ confirmation and respects KLayout's unsaved-changes dialog. The console assigns
 `macros/pocket_bindkeys.rb` from the Ruby macro editor: **M** Move, **S** Select,
 **K** ruler, **P** polygon, **B** Box, **T** text, **Ctrl+S** path and **Ctrl+D**
 clear rulers. The full profile is applied only on request.
-
-## SKY130 through Salt
-
-In **Tools → Manage Packages**, search for **Efabless_sky130** and install it.
-Restart KLayout and explicitly select **sky130** when creating a layout.
-This package installs the SKY130 integration for KLayout; its PCells depend on
-**gdsfactory in KLayout's Python**. We do not yet have a validated, reproducible
-installation for Windows with MinGW Python. Installing gdsfactory in another
-Python does not resolve this dependency. An installed technology does not
-guarantee that the `skywater130` library is available.
-
-The [sky130_fd_sc_hd__inv_1 GDS](https://raw.githubusercontent.com/google/skywater-pdk-libs-sky130_fd_sc_hd/main/cells/inv/sky130_fd_sc_hd__inv_1.gds)
-is a fixed standard-cell example. Open it with **File → Open** without PCells;
-it does not test parametric transistor generation.
 
 ## PDK manager — experimental
 
